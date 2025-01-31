@@ -25,35 +25,46 @@ class ProductsController extends Controller
 
     public function getArcaCategory()
     {
-        $rootId = '8'; //! ID di Bricocanali - Da cambiare per altri ecommerce
-
-        // Recupero Bricocanali e tutte le sottocategorie dirette
-        $mainCategories = DB::connection('arca')
-            ->table('ARCategoria')
-            ->select('Id_ARCategoria', 'Id_ARCategoria_P', 'Descrizione')
-            ->where('Id_ARCategoria_P', $rootId)
-            ->get();
-
-        // Colleziona tutti gli ID delle sottocategorie di primo livello
-        $subcategoryIds = $mainCategories->pluck('Id_ARCategoria')->toArray();
-        
-        // Recupera sottocategorie di secondo livello
-        $subSubCategories = DB::connection('arca')
-            ->table('ARCategoria')
-            ->select('Id_ARCategoria', 'Id_ARCategoria_P', 'Descrizione')
-            ->whereIn('Id_ARCategoria_P', $subcategoryIds)
-            ->get();
-
-        // Unisco tutte le categorie con le sottocategorie
-        $allCategories = $mainCategories->merge($subSubCategories);
-        
-        // Restituisce entrambe le categorie e sottocategorie separatamente
+        $rootId = env('ROOT_ID'); //! ID BRICOCANALI
+    
+        // Funzione ricorsiva per recuperare categorie a più livelli
+        $fetchCategories = function ($parentIds, &$allCategories) use (&$fetchCategories) {
+            if (empty($parentIds)) {
+                return; // Termina la ricorsione se non ci sono più ID genitori
+            }
+    
+            // Recupera le sottocategorie per gli ID forniti
+            $subCategories = DB::connection('arca')
+                ->table('ARCategoria')
+                ->select('Id_ARCategoria', 'Id_ARCategoria_P', 'Descrizione')
+                ->whereIn('Id_ARCategoria_P', $parentIds)
+                ->get();
+    
+            // Aggiungi le sottocategorie alla collezione generale
+            $allCategories = $allCategories->merge($subCategories);
+    
+            // Colleziona i prossimi ID per la ricorsione
+            $nextParentIds = $subCategories->pluck('Id_ARCategoria')->toArray();
+    
+            // Chiamata ricorsiva per esplorare i livelli successivi
+            $fetchCategories($nextParentIds, $allCategories);
+        };
+    
+        // Inizializza la collezione delle categorie principali e avvia la ricorsione
+        $allCategories = collect();
+        $fetchCategories([$rootId], $allCategories);
+    
+        // Filtra le categorie principali (quelle che hanno come genitore l'ID root)
+        $mainCategories = $allCategories->filter(function ($category) use ($rootId) {
+            return $category->Id_ARCategoria_P == $rootId;
+        });
+    
+        // Restituisci le categorie principali, le sottocategorie e tutte le categorie
         return [
             'mainCategories' => $mainCategories,
-            'subCategories' => $subSubCategories,
             'allCategories' => $allCategories
         ];
-    }
+    }    
 
     public function getPrestashopCategories()
     {
@@ -80,11 +91,11 @@ class ProductsController extends Controller
     private function fetchProducts()
     {
         // Ottieni l'ultima revisione per i listini 'LSA0005' e 'LSA0009'
-        $id_LSRevisione4 = DB::connection('arca')
+        $id_LSRevisione5 = DB::connection('arca')
         ->table('LSRevisione')
         ->whereNotNull('DataPubblicazione')
         ->where('DataPubblicazione', '>', '1990-01-01')
-        ->where('cd_ls', 'LSA0005')
+        ->where('cd_ls', env('LISTINO_CLIENTE'))
         ->orderBy('DataPubblicazione', 'desc')
         ->value('Id_LSRevisione');
 
@@ -92,7 +103,7 @@ class ProductsController extends Controller
             ->table('LSRevisione')
             ->whereNotNull('DataPubblicazione')
             ->where('DataPubblicazione', '>', '1990-01-01')
-            ->where('cd_ls', 'LSA0009')
+            ->where('cd_ls', env('LISTINO_COSTO_NETTO'))
             ->orderBy('DataPubblicazione', 'desc')
             ->value('Id_LSRevisione');
 
@@ -139,23 +150,24 @@ class ProductsController extends Controller
             ) AS sub'))
             ->where('rn', 1);
 
-        // Ottieni i prodotti con i prezzi dai listini
-        $products = DB::connection('arca')
+            // Ottieni i prodotti con i prezzi dai listini
+            $products = DB::connection('arca')
             ->table('AR')
-            ->join('LSArticolo as Art4', function ($join) use ($id_LSRevisione4) {
-                $join->on('AR.Cd_AR', '=', 'Art4.Cd_AR')
-                    ->where('Art4.Id_LSRevisione', '=', $id_LSRevisione4);
+            ->join('LSArticolo as Art5', function ($join) use ($id_LSRevisione5) {
+                $join->on('AR.Cd_AR', '=', 'Art5.Cd_AR')
+                    ->where('Art5.Id_LSRevisione', '=', $id_LSRevisione5);
             })
             ->join('LSArticolo as Art9', function ($join) use ($id_LSRevisione9) {
                 $join->on('AR.Cd_AR', '=', 'Art9.Cd_AR')
                     ->where('Art9.Id_LSRevisione', '=', $id_LSRevisione9);
             })
-            ->join('ARMarca', 'AR.Cd_ARMarca', '=', 'ARMarca.Cd_ARMarca') // Join con la tabella ARMarca
+            ->leftJoin('ARMarca', 'AR.Cd_ARMarca', '=', 'ARMarca.Cd_ARMarca') // Join con la tabella ARMarca
             ->joinSub($subQuery, 'ARMisura', function ($join) {
                 $join->on('AR.Cd_AR', '=', 'ARMisura.Cd_AR');
             })
             ->where('AR.Obsoleto', 0)
             ->where('AR.WebB2CPubblica', 1)
+            ->whereRaw("AR.Attributi.exist('/rows/row[@attributo=xs:unsignedLong(\"1028\")]') = 1")
             ->select(
                 'AR.Cd_AR',
                 'AR.WebDescrizione',
@@ -169,27 +181,36 @@ class ProductsController extends Controller
                 'AR.Attributi',
                 'AR.Id_ARCategoria',
                 'ARMarca.Descrizione as DescrizioneMarca', // Seleziona la descrizione della marca
-                'Art4.Prezzo as Prezzo_LSA0005',
+                'Art5.Prezzo as Prezzo_LSA0005',
+                'Art5.Sconto as Sconto_LSA0005', // Aggiungi il campo sconto dal listino 4
                 'Art9.Prezzo as Prezzo_LSA0009'
             )
             ->get()
             ->map(function ($item) use ($giacenze) {
                 $fattore = $item->Fattore;
-
-                // Applica il fattore solo ai prezzi
-                $item->Prezzo_LSA0005 = number_format($item->Prezzo_LSA0005 * $fattore, 3, '.', '');
+            
+                // Calcola il prezzo scontato per il listino 4
+                $item->Prezzo_LSA0005 = is_numeric($item->Prezzo_LSA0005) ? (float)$item->Prezzo_LSA0005 : 0;
+                $item->Sconto_LSA0005 = is_numeric($item->Sconto_LSA0005) ? (float)$item->Sconto_LSA0005 : 0;
+                $item->Prezzo_LSA0009 = is_numeric($item->Prezzo_LSA0009) ? (float)$item->Prezzo_LSA0009 : 0;
+                $fattore = is_numeric($item->Fattore) ? (float)$item->Fattore : 1;
+                
+                // Calcola i prezzi con i valori verificati
+                $item->Prezzo_LSA0005 = number_format(($item->Prezzo_LSA0005 * (1 - $item->Sconto_LSA0005 / 100)) * $fattore, 3, '.', '');
                 $item->Prezzo_LSA0009 = number_format($item->Prezzo_LSA0009 * $fattore, 3, '.', '');
-
-                // Dividi la giacenza per il fattore
-                $item->Giacenza = isset($giacenze[$item->Cd_AR]) ? number_format($giacenze[$item->Cd_AR]->QuantitaDisp / $fattore, 3, '.', '') : '0.000';
-
+                
+            
+                // Dividi la giacenza per il fattore e verifica se è negativa
+                $giacenza = isset($giacenze[$item->Cd_AR]) ? $giacenze[$item->Cd_AR]->QuantitaDisp / $fattore : 0;
+                $item->Giacenza = number_format(max($giacenza, 0), 3, '.', ''); // Usa max() per evitare valori negativi
+            
                 // Estrai gli attributi e aggiungi la descrizione degli attributi
                 $item->DescrizioneAttributo = $this->getAttributesByIds($this->parseXML($item->Attributi));
-
+            
                 return $item;
-            });
+            });            
 
-        return $products;
+        return $products;    
     }
 
     private function parseXML($string)

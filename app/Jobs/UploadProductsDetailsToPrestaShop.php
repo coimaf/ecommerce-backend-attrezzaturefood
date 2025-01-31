@@ -27,29 +27,33 @@ class UploadProductsDetailsToPrestaShop implements ShouldQueue
     
     public function handle()
     {
+        // Genera il nome del file di log
+        $logFile = $this->generateLogFileName();
+        $this->logMessage($logFile, "Inizio job sincronizzazione prodotti \n");
+    
         $client = $this->guzzleService->getClient();
     
         // Ottieni tutti i prodotti esistenti su PrestaShop
         $prestashopProducts = $this->getAllPrestaShopProducts($client);
+        $this->logMessage($logFile, count($prestashopProducts) . " prodotti esistenti su PrestaShop ottenuti \n");
     
         foreach ($this->data['products'] as $product) {
             try {
-                // Verifica se il prodotto esiste già su PrestaShop
+                $this->logMessage($logFile, "Elaborazione prodotto: {$product->Cd_AR} \n");
+    
                 if (isset($prestashopProducts[$product->Cd_AR])) {
                     $productId = $prestashopProducts[$product->Cd_AR];
-                    $manufacturerId = $this->getManufacturerIdByName($client, $product->DescrizioneMarca);
-                    $productData = $this->generateProductXML($product, $productId, $manufacturerId);
-                                    
-                    // Recupera le categorie esistenti del prodotto
-                    $existingCategories = $this->getProductCategories($client, $productId);
-                    
+                    // $manufacturerId = $this->getManufacturerIdByName($client, $product->DescrizioneMarca);
+                    $productData = $this->generateProductXML($product, $productId);
                     $xmlProduct = $productData['xml'];
-                    $response = $client->request('PUT', "products/$productId", ['body' => $xmlProduct]);
+                    $this->logMessage($logFile, "Prodotto esistente: aggiornamento in corso (ID Prestahop: $productId)");
+                    $client->request('PUT', "products/$productId", ['body' => $xmlProduct]);
                 } else {
                     $productData = $this->generateProductXML($product);
                     $xmlProduct = $productData['xml'];
                     $response = $client->request('POST', 'products', ['body' => $xmlProduct]);
                     $productId = $this->extractProductId($response);
+                    $this->logMessage($logFile, "Nuovo prodotto creato: ID $productId");
                 }
     
                 // Aggiorna lo stock
@@ -57,27 +61,64 @@ class UploadProductsDetailsToPrestaShop implements ShouldQueue
                 $outOfStock = $productData['out_of_stock'];
                 $discountPercentage = $productData['discount_percentage'];
                 $this->updateStock($productId, $quantity, $client, $outOfStock);
+                $this->logMessage($logFile, "Stock aggiornato per prodotto ID Prestahop: $productId (quantità: $quantity)");
     
                 // Gestisci specific_price
                 if ($discountPercentage > 0) {
                     $this->updateSpecificPrice($productId, $discountPercentage, $client);
+                    $this->logMessage($logFile, "Prezzo specifico aggiornato per prodotto ID Prestashop $productId (sconto: $discountPercentage%)\n");
                 } else {
                     $this->deleteSpecificPrice($productId, $client);
+                    $this->logMessage($logFile, "Prezzo specifico rimosso per prodotto ID Prestashop $productId\n");
                 }
     
-                // Rimuovi il prodotto dall'elenco degli esistenti per non eliminarlo
+                // Rimuovi il prodotto dall'elenco degli esistenti
                 unset($prestashopProducts[$product->Cd_AR]);
             } catch (GuzzleException $e) {
-                Log::error("Caricamento fallito per il prodotto: {$product->Cd_AR}", [
-                    'error' => $e->getMessage(),
+                $errorMessage = "Errore per il prodotto {$product->Cd_AR}: " . $e->getMessage();
+                $this->logMessage($logFile, $errorMessage);
+                Log::error($errorMessage, [
                     'response_body' => $e->getResponse() ? $e->getResponse()->getBody()->getContents() : 'No response body'
                 ]);
             }
         }
-        
-        // Elimina i prodotti non più presenti in Arca
+    
+        // Elimina i prodotti non più presenti
         $this->deleteAbsentProducts($client, $prestashopProducts);
+        $this->logMessage($logFile, "Prodotti non più presenti su arca eliminati");
+    
+        $this->logMessage($logFile, "Fine job sincronizzazione prodotti");
     }
+    
+    /**
+     * Genera un nome per il file di log.
+     */
+    private function generateLogFileName()
+    {
+        $basePath = storage_path('logs');
+        $date = now()->format('Y-m-d');
+        $fileBaseName = "$basePath/prestashop_details_job_log_$date";
+    
+        $filePath = "$fileBaseName.txt";
+        $counter = 1;
+    
+        while (file_exists($filePath)) {
+            $filePath = "$fileBaseName($counter).txt";
+            $counter++;
+        }
+    
+        return $filePath;
+    }
+    
+    /**
+     * Scrive un messaggio nel file di log.
+     */
+    private function logMessage($filePath, $message)
+    {
+        $timestamp = now()->format('Y-m-d H:i:s');
+        file_put_contents($filePath, "[$timestamp] $message" . PHP_EOL, FILE_APPEND);
+    }
+    
       
     private function getAllPrestaShopProducts($client)
     {
@@ -113,19 +154,19 @@ class UploadProductsDetailsToPrestaShop implements ShouldQueue
         }
     }
 
-    private function getManufacturerIdByName($client, $manufacturerName)
-    {
-        $response = $client->request('GET', 'manufacturers', [
-            'query' => [
-                'output_format' => 'JSON',
-                'filter[name]' => $manufacturerName,
-                'display' => '[id]'
-            ]
-        ]);
+    // private function getManufacturerIdByName($client, $manufacturerName)
+    // {
+    //     $response = $client->request('GET', 'manufacturers', [
+    //         'query' => [
+    //             'output_format' => 'JSON',
+    //             'filter[name]' => $manufacturerName,
+    //             'display' => '[id]'
+    //         ]
+    //     ]);
 
-        $data = json_decode($response->getBody(), true);
-        return $data['manufacturers'][0]['id'] ?? null;
-    }
+    //     $data = json_decode($response->getBody(), true);
+    //     return $data['manufacturers'][0]['id'] ?? null;
+    // }
 
     private function generateProductXML($product, $productId = null, $manufacturerId = null, $existingCategories = [])
     {
@@ -160,11 +201,11 @@ class UploadProductsDetailsToPrestaShop implements ShouldQueue
         $langShortDescription->addAttribute('id', '1');  // Assumi che '1' sia l'ID della lingua desiderata
     
         // Aggiungi il prezzo
-        $xmlProduct->addChild('price', htmlspecialchars($product->Prezzo_LSA0004));
+        $xmlProduct->addChild('price', htmlspecialchars($product->Prezzo_LSA0005));
         $xmlProduct->addChild('wholesale_price', htmlspecialchars($product->Prezzo_LSA0009));
         $xmlProduct->addChild('id_tax_rules_group', '1'); // IVA al 22%
         $xmlProduct->addChild('unit_price_ratio', '1');
-        $xmlProduct->addChild('unit_price', htmlspecialchars($product->Prezzo_LSA0004));
+        $xmlProduct->addChild('unit_price', htmlspecialchars($product->Prezzo_LSA0005));
         $xmlProduct->addChild('unity', htmlspecialchars($product->Cd_ARMisura));
     
         // Misure
@@ -209,7 +250,7 @@ class UploadProductsDetailsToPrestaShop implements ShouldQueue
         $discountPercentage = 0;
         $addToHomeCategory = false;
 
-        // Mappatura degli attributi di sconto
+        //! Mappatura degli attributi di sconto
         $discountAttributes = [
             '1021' => 5,
             '1022' => 10,
@@ -233,16 +274,16 @@ class UploadProductsDetailsToPrestaShop implements ShouldQueue
             }
     
             // Controllo per l'attributo "in produzione" (1047)
-            if ($attributeId == '1047') {
+            if ($attributeId == env('IN_PRODUZIONE')) {
                 $outOfStock = '1';
                 $availableNowText = '';
-                $availableLaterText = 'Disponibile tra 15 giorni';
+                $availableLaterText = env('LABEL_IN_PRODUZIONE');
                 $quantity = '0';
                 $availableDate = now()->addDays(15)->toDateString();
             }
 
             // Controllo per l'attributo "home" (1034)
-            if ($attributeId == '1034') {
+            if ($attributeId == env('IN_HOME')) {
                 $addToHomeCategory = true;
             }
         }
@@ -265,8 +306,8 @@ class UploadProductsDetailsToPrestaShop implements ShouldQueue
         $availableLaterLang->addAttribute('id', '1');
 
         // Aggiungere le categorie
-        // Sostituisci '3' con l'ID della categoria predefinita che desideri utilizzare per i prodotti senza categoria corrispondente
-        $defaultCategoryId = $product->matchedCategoryId ?: '3';
+        // Sostituisci '2' con l'ID della categoria predefinita che desideri utilizzare per i prodotti senza categoria corrispondente
+        $defaultCategoryId = $product->matchedCategoryId ?: '2';
         $xmlProduct->addChild('id_category_default', $defaultCategoryId);
         $associations = $xmlProduct->addChild('associations');
         $categories = $associations->addChild('categories');

@@ -18,31 +18,45 @@ class UploadImagesToPrestaShop implements ShouldQueue
     
     protected $data;
     protected $guzzleService;
+    protected $logFile;
     protected $errorLogFile;
 
     public function __construct($data, GuzzleService $guzzleService)
     {
         $this->data = $data;
         $this->guzzleService = $guzzleService;
-        $this->errorLogFile = storage_path('logs/prestashop_errors.txt'); // Path to the error log file
+        $this->logFile = $this->generateLogFileName(); // File giornaliero per i log
+        $this->errorLogFile = storage_path('logs/prestashop_errors.txt'); // File per gli errori
     }
     
     public function handle()
     {
+        $this->logMessage('Inizio sincronizzazione immagini su PrestaShop.');
+
         $client = $this->guzzleService->getClient();
 
         try {
             $prestashopProducts = $this->getAllPrestaShopProducts($client);
+            $this->logMessage('Prodotti recuperati da PrestaShop.', ['count' => count($prestashopProducts)]);
 
             foreach ($this->data['products'] as $product) {
-                $productId = $prestashopProducts[$product->Cd_AR];
-                $newImages = $this->data['images'][$product->Cd_AR];
-                $this->manageProductImages($productId, $newImages, $client);
+                $this->logMessage("Inizio gestione immagini per prodotto.", ['Cd_AR' => $product->Cd_AR]);
+                
+                $productId = $prestashopProducts[$product->Cd_AR] ?? null;
+
+                if ($productId) {
+                    $newImages = $this->data['images'][$product->Cd_AR] ?? [];
+                    $this->manageProductImages($productId, $newImages, $client);
+                } else {
+                    $this->logMessage("Prodotto non trovato in PrestaShop.", ['Cd_AR' => $product->Cd_AR]);
+                }
             }
         } catch (\Exception $e) {
             $this->logError("Errore durante l'invio delle immagini a PrestaShop", $e);
             $this->fail($e);
         }
+
+        $this->logMessage('Fine sincronizzazione immagini su PrestaShop.');
     }
 
     public function failed(\Throwable $exception)
@@ -73,26 +87,26 @@ class UploadImagesToPrestaShop implements ShouldQueue
     {
         $existingImages = [];
 
-        // Tenta di recuperare le immagini esistenti
+        // Recupera le immagini esistenti
         try {
             $existingImagesResponse = $client->request('GET', "images/products/$productId");
             $existingImages = new \SimpleXMLElement($existingImagesResponse->getBody());
         } catch (GuzzleException $e) {
             if ($e->getCode() == 404) {
-                Log::info("Non sono state trovate immagini per il prodotto: $productId. Procedo ad aggiungere altre immagini.");
+                $this->logMessage("Non sono state trovate immagini per il prodotto.", ['product_id' => $productId]);
             } else {
-                $this->logError('Errore nel recupero delle immagini esistenti in Prestashop per eliminarle.', $e, $productId);
-                return; // Interrompi il codice
+                $this->logError('Errore nel recupero delle immagini esistenti in Prestashop.', $e, $productId);
+                return;
             }
         }
 
-        // Procedi a rimuovere le immagini esistenti, se presenti
+        // Elimina immagini esistenti
         if (!empty($existingImages->image)) {
-            // Elimina le vecchie immagini
             foreach ($existingImages->image->declination as $image) {
                 $imageId = (string)$image['id'];
                 try {
                     $client->request('DELETE', "images/products/$productId/{$imageId}");
+                    $this->logMessage("Immagine eliminata.", ['product_id' => $productId, 'image_id' => $imageId]);
                 } catch (GuzzleException $e) {
                     $this->logError("Eliminazione immagine fallita.", $e, $productId, $imageId);
                 }
@@ -111,7 +125,7 @@ class UploadImagesToPrestaShop implements ShouldQueue
                         ]
                     ]
                 ]);
-                Log::info('Immagine aggiunta con successo.', [
+                $this->logMessage('Immagine aggiunta con successo.', [
                     'product_id' => $productId, 
                     'image_url' => $imageUrl,
                     'status_code' => $response->getStatusCode()
@@ -122,25 +136,51 @@ class UploadImagesToPrestaShop implements ShouldQueue
         }
     }
 
+    private function generateLogFileName()
+    {
+        $basePath = storage_path('logs');
+        $date = now()->format('Y-m-d');
+        $fileBaseName = "$basePath/prestashop_images_job_log_$date";
+
+        $filePath = "$fileBaseName.txt";
+        $counter = 1;
+
+        while (file_exists($filePath)) {
+            $filePath = "$fileBaseName($counter).txt";
+            $counter++;
+        }
+
+        return $filePath;
+    }
+
+    private function logMessage($message, $data = null)
+    {
+        $timestamp = now()->format('Y-m-d H:i:s');
+        $logEntry = "[$timestamp] $message";
+        if ($data) {
+            $logEntry .= " | " . json_encode($data);
+        }
+        file_put_contents($this->logFile, $logEntry . PHP_EOL, FILE_APPEND);
+    }
+
     private function logError($message, $exception, $productId = null, $imageId = null)
     {
         $errorData = [
             'error' => $exception->getMessage(),
         ];
-    
+
         if ($productId) {
             $errorData['product_id'] = $productId;
         }
-    
+
         if ($imageId) {
             $errorData['image_id'] = $imageId;
         }
-    
+
         Log::error($message, $errorData);
-    
-        // Aggiungi l'errore al file di log
+
         $errorLog = date('Y-m-d H:i:s') . " - $message - " . json_encode($errorData) . PHP_EOL;
-        file_put_contents(storage_path('logs/prestashop_errors.txt'), $errorLog, FILE_APPEND);
+        file_put_contents($this->errorLogFile, $errorLog, FILE_APPEND);
+        $this->logMessage($message, $errorData); // Registra anche nel log giornaliero
     }
-    
 }

@@ -20,6 +20,7 @@ class ImportCustomersToArca implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     protected $guzzleService;
+    protected $logFile;
 
     /**
      * Create a new job instance.
@@ -27,6 +28,7 @@ class ImportCustomersToArca implements ShouldQueue
     public function __construct(GuzzleService $guzzleService)
     {
         $this->guzzleService = $guzzleService;
+        $this->logFile = $this->generateLogFileName(); // Genera il nome del file di log
     }
 
     /**
@@ -34,36 +36,66 @@ class ImportCustomersToArca implements ShouldQueue
      */
     public function handle(): void
     {
+        $this->logMessage("Inizio job sincronizzazione Clienti");
         $client = $this->guzzleService->getClient();
-
+    
+        $totalOrdersImported = 0;
+        $totalOrdersCanceled = 0;
+    
         try {
             $customers = $this->fetchCustomers($client);
-
+            if (empty($customers)) {
+                $this->logMessage('Nessun cliente trovato durante la sincronizzazione.');
+                return; // Termina il job se non ci sono clienti
+            }
+            
+            $this->logMessage('Clienti recuperati con successo.', ['count' => count($customers)]);
             $customersWithOrdersAndAddresses = [];
+    
             foreach ($customers as $customer) {
+                $this->logMessage('Gestione cliente iniziata.', ['customer_id' => $customer['id']]);
                 $orders = $this->fetchCustomerOrders($client, $customer['id']);
-
-                if (!empty($orders)) {
-                    $ordersWithAddressesAndMessages = [];
-                    foreach ($orders as $order) {
-                        $orderDetails = $this->fetchOrderDetails($client, $order['id']);
-                        $billingAddress = $this->fetchAddressDetails($client, $orderDetails['id_address_invoice'] ?? null);
-                        $shippingAddress = $this->fetchAddressDetails($client, $orderDetails['id_address_delivery'] ?? null);
-
-                        if ($billingAddress) {
-                            $orderDetails['billing_address'] = $billingAddress;
-                        }
-
-                        if ($shippingAddress) {
-                            $orderDetails['shipping_address'] = $shippingAddress;
-                        }
-
-                        $orderMessages = $this->fetchOrderMessages($client, $order['id']);
-                        $orderDetails['messages'] = $orderMessages;
-
-                        $ordersWithAddressesAndMessages[] = $orderDetails;
+    
+                if (empty($orders)) {
+                    $this->logMessage('Nessun ordine valido trovato per il cliente.', ['customer_id' => $customer['id']]);
+                    continue; // Passa al prossimo cliente se non ci sono ordini
+                }
+    
+                $this->logMessage('Ordini recuperati per il cliente.', ['customer_id' => $customer['id'], 'orders_count' => count($orders)]);
+                $ordersWithAddressesAndMessages = [];
+    
+                foreach ($orders as $order) {
+                    $this->logMessage('Recupero dettagli dello stato ordine.', ['order_id' => $order['id'], 'current_state' => $order['current_state']]);
+    
+                    // Verifica se lo stato è "Annullato" (current_state = 6)
+                    if ((int)$order['current_state'] === 6) {
+                        $this->logMessage('Ordine ignorato perché annullato.', ['order_id' => $order['id'], 'state' => $order['current_state']]);
+                        $totalOrdersCanceled++;
+                        continue; // Salta l'elaborazione di questo ordine
                     }
-
+    
+                    $this->logMessage('Gestione ordine iniziata.', ['order_id' => $order['id']]);
+                    $orderDetails = $this->fetchOrderDetails($client, $order['id']);
+                    $billingAddress = $this->fetchAddressDetails($client, $orderDetails['id_address_invoice'] ?? null);
+                    $shippingAddress = $this->fetchAddressDetails($client, $orderDetails['id_address_delivery'] ?? null);
+    
+                    if ($billingAddress) {
+                        $orderDetails['billing_address'] = $billingAddress;
+                    }
+    
+                    if ($shippingAddress) {
+                        $orderDetails['shipping_address'] = $shippingAddress;
+                    }
+    
+                    $orderMessages = $this->fetchOrderMessages($client, $order['id']);
+                    $orderDetails['messages'] = $orderMessages;
+    
+                    $ordersWithAddressesAndMessages[] = $orderDetails;
+                    $this->logMessage('Ordine gestito con successo.', ['order_id' => $order['id']]);
+                    $totalOrdersImported++;
+                }
+    
+                if (!empty($ordersWithAddressesAndMessages)) {
                     $customersWithOrdersAndAddresses[] = [
                         'customer' => [
                             'id' => $customer['id'],
@@ -73,56 +105,101 @@ class ImportCustomersToArca implements ShouldQueue
                         ],
                         'orders' => $ordersWithAddressesAndMessages,
                     ];
+                    $this->logMessage('Cliente con ordini validi aggiunto alla sincronizzazione.', ['customer_id' => $customer['id']]);
+                } else {
+                    $this->logMessage('Cliente ignorato perché non ha ordini validi.', ['customer_id' => $customer['id']]);
                 }
             }
-
+    
             // Processa i clienti e i loro ordini
-            $this->processCustomers($customersWithOrdersAndAddresses, $client);
-
+            if (!empty($customersWithOrdersAndAddresses)) {
+                $this->processCustomers($customersWithOrdersAndAddresses, $client);
+            }
+    
+            // Log finale con i conteggi
+            $this->logMessage('Importazione completata con successo.');
         } catch (\Exception $e) {
-            Log::error('Error retrieving customers, orders, addresses or messages: ' . $e->getMessage());
+            $this->logMessage('Errore durante l\'importazione clienti: ' . $e->getMessage());
         }
     }
+      
 
+    private function fetchOrderStateDetails($client, $stateId)
+    {
+        try {
+            $response = $client->request('GET', "order_states/{$stateId}", [
+                'query' => [
+                    'output_format' => 'JSON',
+                ],
+            ]);
+    
+            $body = $response->getBody();
+            $orderStateData = json_decode($body, true);
+    
+            $this->logMessage('Dettagli stato ordine recuperati.', ['state_id' => $stateId]);
+            return $orderStateData['order_state'] ?? [];
+        } catch (\Exception $e) {
+            $this->logMessage('Errore durante il recupero dello stato ordine.', ['state_id' => $stateId, 'error' => $e->getMessage()]);
+            return [];
+        }
+    }
+    
     private function fetchCustomers(Client $client)
     {
-        $response = $client->request('GET', 'customers', [
-            'query' => [
-                'output_format' => 'JSON',
-                'display' => '[id,firstname,lastname,email]'
-            ]
-        ]);
+        try {
+            $response = $client->request('GET', 'customers', [
+                'query' => [
+                    'output_format' => 'JSON',
+                    'display' => '[id,firstname,lastname,email]'
+                ]
+            ]);
 
-        $body = $response->getBody();
-        $customersData = json_decode($body, true);
-        return $customersData['customers'] ?? [];
+            $body = $response->getBody();
+            $customersData = json_decode($body, true);
+            $this->logMessage('Clienti recuperati da PrestaShop.');
+            return $customersData['customers'] ?? [];
+        } catch (\Exception $e) {
+            $this->logMessage('Errore durante il recupero dei clienti: ' . $e->getMessage());
+            return [];
+        }
     }
 
     private function fetchCustomerOrders(Client $client, $customerId)
     {
-        $response = $client->request('GET', 'orders', [
-            'query' => [
-                'output_format' => 'JSON',
-                'filter[id_customer]' => $customerId
-            ]
-        ]);
+        try {
+            $response = $client->request('GET', 'orders', [
+                'query' => [
+                    'output_format' => 'JSON',
+                    'filter[id_customer]' => $customerId,
+                    'display' => '[id,current_state]'
+                ]
+            ]);
 
-        $body = $response->getBody();
-        $ordersData = json_decode($body, true);
-        return $ordersData['orders'] ?? [];
+            $body = $response->getBody();
+            $ordersData = json_decode($body, true);
+            $this->logMessage('Ordini recuperati per cliente.', ['customer_id' => $customerId]);
+            return $ordersData['orders'] ?? [];
+        } catch (\Exception $e) {
+            $this->logMessage("Errore durante il recupero degli ordini per cliente {$customerId}: " . $e->getMessage());
+            return [];
+        }
     }
 
     private function fetchOrderDetails(Client $client, $orderId)
     {
-        $response = $client->request('GET', "orders/{$orderId}", [
-            'query' => [
-                'output_format' => 'JSON'
-            ]
-        ]);
+        try {
+            $response = $client->request('GET', "orders/{$orderId}", [
+                'query' => ['output_format' => 'JSON']
+            ]);
 
-        $body = $response->getBody();
-        $orderDetails = json_decode($body, true);
-        return $orderDetails['order'] ?? [];
+            $body = $response->getBody();
+            $orderDetails = json_decode($body, true);
+            $this->logMessage('Dettagli ordine recuperati.', ['order_id' => $orderId]);
+            return $orderDetails['order'] ?? [];
+        } catch (\Exception $e) {
+            $this->logMessage("Errore durante il recupero dei dettagli ordine {$orderId}: " . $e->getMessage());
+            return [];
+        }
     }
 
     private function fetchAddressDetails(Client $client, $addressId)
@@ -131,67 +208,74 @@ class ImportCustomersToArca implements ShouldQueue
             return null;
         }
 
-        $response = $client->request('GET', "addresses/{$addressId}", [
-            'query' => [
-                'output_format' => 'JSON'
-            ]
-        ]);
+        try {
+            $response = $client->request('GET', "addresses/{$addressId}", [
+                'query' => ['output_format' => 'JSON']
+            ]);
 
-        $body = $response->getBody();
-        $addressDetails = json_decode($body, true);
-        return $addressDetails['address'] ?? [];
+            $body = $response->getBody();
+            $addressDetails = json_decode($body, true);
+            $this->logMessage('Dettagli indirizzo recuperati.', ['address_id' => $addressId]);
+            return $addressDetails['address'] ?? [];
+        } catch (\Exception $e) {
+            $this->logMessage("Errore durante il recupero dei dettagli indirizzo {$addressId}: " . $e->getMessage());
+            return [];
+        }
     }
 
     private function fetchOrderMessages(Client $client, $orderId)
     {
-        $response = $client->request('GET', 'customer_threads', [
-            'query' => [
-                'output_format' => 'JSON',
-                'filter[id_order]' => $orderId
-            ]
-        ]);
-
-        $body = $response->getBody();
-        $threadsData = json_decode($body, true);
-        $threads = $threadsData['customer_threads'] ?? [];
-
-        $messages = [];
-        foreach ($threads as $thread) {
-            $threadId = $thread['id'];
-            $response = $client->request('GET', "customer_threads/{$threadId}", [
+        try {
+            $response = $client->request('GET', 'customer_threads', [
                 'query' => [
                     'output_format' => 'JSON',
-                    'associations' => 'customer_messages'
+                    'filter[id_order]' => $orderId
                 ]
             ]);
 
             $body = $response->getBody();
-            $threadDetails = json_decode($body, true);
-            $threadDetails = $threadDetails['customer_thread'] ?? [];
+            $threadsData = json_decode($body, true);
+            $threads = $threadsData['customer_threads'] ?? [];
+            $messages = [];
 
-            if (isset($threadDetails['associations']['customer_messages'])) {
-                foreach ($threadDetails['associations']['customer_messages'] as $messageAssoc) {
-                    $messageId = $messageAssoc['id'];
+            foreach ($threads as $thread) {
+                $threadId = $thread['id'];
+                $response = $client->request('GET', "customer_threads/{$threadId}", [
+                    'query' => [
+                        'output_format' => 'JSON',
+                        'associations' => 'customer_messages'
+                    ]
+                ]);
 
-                    $response = $client->request('GET', "customer_messages/{$messageId}", [
-                        'query' => [
-                            'output_format' => 'JSON'
-                        ]
-                    ]);
+                $body = $response->getBody();
+                $threadDetails = json_decode($body, true);
+                $threadDetails = $threadDetails['customer_thread'] ?? [];
 
-                    $body = $response->getBody();
-                    $messageDetails = json_decode($body, true);
-                    $messageDetails = $messageDetails['customer_message'] ?? [];
+                if (isset($threadDetails['associations']['customer_messages'])) {
+                    foreach ($threadDetails['associations']['customer_messages'] as $messageAssoc) {
+                        $messageId = $messageAssoc['id'];
 
-                    $messages[] = $messageDetails['message'] ?? '';
+                        $response = $client->request('GET', "customer_messages/{$messageId}", [
+                            'query' => ['output_format' => 'JSON']
+                        ]);
+
+                        $body = $response->getBody();
+                        $messageDetails = json_decode($body, true);
+                        $messages[] = $messageDetails['customer_message']['message'] ?? '';
+                    }
                 }
             }
+            $this->logMessage('Messaggi ordine recuperati.', ['order_id' => $orderId]);
+            return $messages;
+        } catch (\Exception $e) {
+            $this->logMessage("Errore durante il recupero dei messaggi per ordine {$orderId}: " . $e->getMessage());
+            return [];
         }
-        return $messages;
     }
 
     private function processCustomers($customersWithOrdersAndAddresses, $client)
     {
+        $this->logMessage('Inizio elaborazione clienti.');
         foreach ($customersWithOrdersAndAddresses as $customerWithOrder) {
             $customer = $customerWithOrder['customer'];
             $orders = $customerWithOrder['orders'];
@@ -203,12 +287,11 @@ class ImportCustomersToArca implements ShouldQueue
     
             // Prendi l'ordine più recente
             $latestOrder = $orders[0];
-    
-            Log::info("Processing customer ID: {$customer['id']}, Order ID: {$latestOrder['id']}");
+            $this->logMessage('Elaborazione cliente.', ['customer_id' => $customer['id'], 'orders_count' => count($orders)]);
     
             $dni = $latestOrder['billing_address']['dni'] ?? null;
             if (!$dni) {
-                Log::warning("Customer ID: {$customer['id']} has no DNI, skipping.");
+                $this->logMessage("cliente ID: {$customer['id']} non ha DNI, salta.");
                 continue;
             }
     
@@ -218,12 +301,12 @@ class ImportCustomersToArca implements ShouldQueue
                 ->first();
     
             if ($existingCustomer) {
-                Log::info("Existing customer found: " . json_encode($existingCustomer));
+                $this->logMessage("Existing customer found: " . json_encode($existingCustomer));
                 // Controlla le discrepanze con il cliente esistente su Arca
                 $billingDifferences = $this->getDifferences((array)$existingCustomer, $latestOrder['billing_address']);
     
                 if (!empty($billingDifferences) && is_array($billingDifferences)) {
-                    Log::info("Discrepancy in billing address for customer ID {$customer['id']}: Arca: " . json_encode($existingCustomer) . " vs PrestaShop: " . json_encode($latestOrder['billing_address']));
+                    $this->logMessage("Discrepanza nell'indirizzo di fatturazione per l'ID cliente {$customer['id']}: Arca: " . json_encode($existingCustomer) . " vs PrestaShop: " . json_encode($latestOrder['billing_address']));
                     $discrepancies = [
                         [
                             'field' => 'Indirizzo di Fatturazione',
@@ -240,13 +323,79 @@ class ImportCustomersToArca implements ShouldQueue
             } else {
                 // Genera il nuovo codice cliente
                 $nextCustomerCode = $this->getNextCustomerCode();
-                Log::info("Generated new customer code: {$nextCustomerCode}");
+                $this->logMessage("Generato nuovo codice cliente: {$nextCustomerCode}");
     
                 // Verifica e gestisci il valore di CodiceFPR
                 $codiceFPR = $latestOrder['billing_address']['address2'] ?? '';
+                
                 if (!preg_match('/^[a-zA-Z0-9]{7}$/', $codiceFPR) && !filter_var($codiceFPR, FILTER_VALIDATE_EMAIL)) {
+                    $this->logMessage("Codice FPR non valido: {$codiceFPR}, non rispetta i criteri (alfanumerico di 7 caratteri o email valida).");
                     $codiceFPR = null;
                 }
+                
+
+                $stateId = $latestOrder['billing_address']['id_state'] ?? null;
+                $provinceCode = null;
+                
+                if ($stateId) {
+                    try {
+                        // Richiesta API per recuperare il dettaglio della provincia
+                        $response = $client->request('GET', 'states', [
+                            'query' => [
+                                'output_format' => 'JSON',
+                                'filter[id]' => $stateId, // Filtro sull'ID dello stato
+                                'display' => '[id,iso_code,name]'
+                            ]
+                        ]);
+                
+                        $body = $response->getBody();
+                        $stateDetails = json_decode($body, true);
+
+                        Log::info($stateDetails);
+                
+                        if (!empty($stateDetails['states'][0]['iso_code'])) {
+                            $provinceCode = strtoupper($stateDetails['states'][0]['iso_code']);
+                            Log::info($provinceCode);
+                        } else {
+                            $provinceCode = ''; // Valore predefinito in caso di errore o dato mancante
+                        }
+                    } catch (\Exception $e) {
+                        $this->logMessage("Errore nel recupero della provincia con ID stato: {$stateId}, errore: {$e->getMessage()}");
+                        $provinceCode = ''; // Fallback in caso di errore
+                    }
+                } else {
+                    $this->logMessage("ID stato mancante per l'ordine.");
+                    $provinceCode = '';
+                }
+                
+                $countryId = $latestOrder['billing_address']['id_country'] ?? null;
+                $countryCode = 'IT'; // Valore predefinito per l'Italia
+
+                if ($countryId) {
+                    try {
+                        // Richiesta API per recuperare il dettaglio della nazione
+                        $response = $client->request('GET', 'countries', [
+                            'query' => [
+                                'output_format' => 'JSON',
+                                'filter[id]' => $countryId, // Filtro sull'ID del paese
+                            ]
+                        ]);
+
+                        $body = $response->getBody();
+                        $countryDetails = json_decode($body, true);
+
+                        if (!empty($countryDetails['countries'][0]['iso_code'])) {
+                            $countryCode = strtoupper($countryDetails['countries'][0]['iso_code']);
+                        }
+                    } catch (\Exception $e) {
+                        $this->logMessage("Errore nel recupero della nazione con ID paese: {$countryId}, errore: {$e->getMessage()}");
+                    }
+                } else {
+                    $this->logMessage("ID paese mancante per l'ordine.");
+                }
+
+
+                
     
                 // Imposta TipoDitta basato sulla presenza della partita IVA
                 $tipoDitta = empty($latestOrder['billing_address']['vat_number']) ? 'F' : 'G';
@@ -260,6 +409,8 @@ class ImportCustomersToArca implements ShouldQueue
                     'Descrizione' => strtoupper($ragioneSociale),
                     'Indirizzo' => strtoupper($latestOrder['billing_address']['address1']) ?? '',
                     'Localita' => strtoupper($latestOrder['billing_address']['city']) ?? '',
+                    'Cd_Provincia' => $provinceCode, // Codice ISO della provincia
+                    'Cd_Nazione' => $countryCode,    // Codice ISO della nazione
                     'Cap' => $latestOrder['billing_address']['postcode'] ?? '',
                     'PartitaIva' => $latestOrder['billing_address']['vat_number'] ?? '',
                     'CodiceFiscale' => strtoupper($dni),
@@ -271,12 +422,14 @@ class ImportCustomersToArca implements ShouldQueue
                     'Id_Lingua' => '1040',
                     'Fido' => '1',
                     'Note_CF' => 'Importato da: ' . config('app.name'),
-                    'Cd_Nazione_Destinazione' => 'IT',
+                    'Cd_Nazione_Destinazione' => $countryCode,
                     'Elenchi' => '1',
                     'Iban' => 'IT',
-                    'Cd_NazioneIva' => 'IT',
-                    'Cd_CGConto_Mastro' => '11010101001'
+                    'Cd_NazioneIva' => $countryCode,
+                    'Cd_CGConto_Mastro' => env('CONTO_CLIENTI_ITALIA')
                 ];
+
+                Log::info($customerArca);
     
                 DB::connection('arca')->table('CF')->insert($customerArca);
     
@@ -290,6 +443,7 @@ class ImportCustomersToArca implements ShouldQueue
             $orderController = new OrdersController($this->guzzleService);
             $orderController->createOrderDocuments($customerCode, $orders);
         }
+        $this->logMessage('Elaborazione clienti completata.');
     }
 
     private function insertContactData($customerCode, $customer, $latestOrder)
@@ -308,7 +462,7 @@ class ImportCustomersToArca implements ShouldQueue
             'Email' => $email
         ];
     
-        Log::info("Tentativo di inserimento contatto: " . json_encode($contactData));
+        $this->logMessage("Tentativo di inserimento contatto: " . json_encode($contactData));
     
         // Verifica se il contatto esiste già
         $existingContact = DB::connection('arca')->table('CFContatto')
@@ -322,9 +476,9 @@ class ImportCustomersToArca implements ShouldQueue
         // Inserisci il contatto solo se non esiste già
         if (!$existingContact) {
             DB::connection('arca')->table('CFContatto')->insert($contactData);
-            Log::info("Contatto inserito con successo: " . json_encode($contactData));
+            $this->logMessage("Contatto inserito con successo: " . json_encode($contactData));
         } else {
-            Log::info("Il contatto esiste già per Cd_CF: {$contactData['Cd_CF']}, Nome: {$contactData['Nome']}, Email: {$contactData['Email']}");
+            $this->logMessage("Il contatto esiste già per Cd_CF: {$contactData['Cd_CF']}, Nome: {$contactData['Nome']}, Email: {$contactData['Email']}");
         }
     }
 
@@ -378,5 +532,32 @@ class ImportCustomersToArca implements ShouldQueue
 
         // Formatta il nuovo codice cliente
         return 'C0' . str_pad($nextNumber, 5, '0', STR_PAD_LEFT);
+    }
+
+    private function generateLogFileName()
+    {
+        $basePath = storage_path('logs');
+        $date = now()->format('Y-m-d');
+        $fileBaseName = "$basePath/prestashop_customers_job_log_$date";
+
+        $filePath = "$fileBaseName.txt";
+        $counter = 1;
+
+        while (file_exists($filePath)) {
+            $filePath = "$fileBaseName($counter).txt";
+            $counter++;
+        }
+
+        return $filePath;
+    }
+
+    private function logMessage($message, $data = null)
+    {
+        $timestamp = now()->format('Y-m-d H:i:s');
+        $logEntry = "[$timestamp] $message";
+        if ($data) {
+            $logEntry .= " | " . json_encode($data);
+        }
+        file_put_contents($this->logFile, $logEntry . PHP_EOL, FILE_APPEND);
     }
 }

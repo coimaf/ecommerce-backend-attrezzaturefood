@@ -23,7 +23,7 @@ class BrandsController extends Controller
         ->table('LSRevisione')
         ->whereNotNull('DataPubblicazione')
         ->where('DataPubblicazione', '>', '1990-01-01')
-        ->where('cd_ls', 'LSA0005')
+        ->where('cd_ls', env('LISTINO_CLIENTE'))
         ->orderBy('DataPubblicazione', 'desc')
         ->value('Id_LSRevisione');
 
@@ -36,7 +36,7 @@ class BrandsController extends Controller
                 ->where('LSArticolo.Id_LSRevisione', '=', $id_LSRevisione4);
         })
         ->where('AR.Obsoleto', 0)
-        ->where('AR.WebB2BPubblica', 1)
+        ->where('AR.WebB2CPubblica', 1)
         ->distinct()
         ->select('ARMarca.Descrizione')
         ->get();

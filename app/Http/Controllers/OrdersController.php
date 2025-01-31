@@ -64,6 +64,9 @@ class OrdersController extends Controller
     {
         // Calcola il numero di prodotti nel carrello
         $numberOfProducts = count($order['associations']['order_rows']);
+
+        // Determina il valore di Cd_PG in base al metodo di pagamento
+        $cdPg = ($order['payment'] === 'Bonifico bancario') ? '0102' : '0057';
         
         // Incrementa il numero di documento solo una volta per il documento principale
         $numeroDoc = $this->getNextDocumentNumber();
@@ -88,17 +91,17 @@ class OrdersController extends Controller
             'DataDoc' => now()->format('Y-m-d'),
             'Cd_MGEsercizio' => date("Y"),
             'EsAnno' => date("Y"),
-            'Cd_CGConto_Banca' => '15010101003',
+            'Cd_CGConto_Banca' => env('CONTO_BANCA'),
             'Cd_VL' => 'EUR',
             'Decimali' => 2,
             'DecimaliPrzUn' => 3,
             'Cambio' => 1,
             'MagPFlag' => 0,
             'MagAFlag' => 0,
-            'Cd_LS_1' => 'LSA0005',
-            'Cd_LS_2' => 'LSA0001',
+            'Cd_LS_1' => env('LISTINO_CLIENTE'),
+            'Cd_LS_2' => env('LISTINO_AVANZATO'),
             'Cd_Agente_1' => '007',
-            'Cd_PG' => '0034',
+            'Cd_PG' => $cdPg,
             'Colli' => 0,
             'PesoLordo' => 0,
             'PesoNetto' => 0,
@@ -170,9 +173,9 @@ class OrdersController extends Controller
             'Cd_AR' => $orderRow['product_reference'],
             'Descrizione' => $orderRow['product_name'],
             'Cd_ARMisura' => $unitMeasure,
-            'Cd_CGConto' => '51010101014',
-            'Cd_Aliquota' => '227',
-            'Cd_Aliquota_R' => '227',
+            'Cd_CGConto' => env('CONTO_RICAVO'),
+            'Cd_Aliquota' => env('ALIQUOTA'),
+            'Cd_Aliquota_R' => env('ALIQUOTA'),
             'Qta' => $orderRow['product_quantity'],
             'FattoreToUM1' => 1,
             'QtaEvadibile' => $orderRow['product_quantity'],
@@ -325,8 +328,8 @@ class OrdersController extends Controller
     
             DB::connection('arca')->table('DOIva')->insert([
                 'Id_DOTes' => $docId,
-                'Cd_Aliquota' => '227',
-                'Aliquota' => '22.0',
+                'Cd_Aliquota' => env('ALIQUOTA'),
+                'Aliquota' => env('ALIQUOTA_DECIMALE'),
                 'Cambio' => '1.000000',
                 'ImponibileV' => round($totaleImponibile, 2),
                 'ImpostaV' => round($ivaGruppo, 2),
@@ -348,10 +351,10 @@ class OrdersController extends Controller
             'Descrizione' => 'Spese di spedizione',
             'TipoRigaSpesa' => 'T',
             'Cd_VL' => 'EUR',
-            'Cd_Aliquota' => '227',
-            'Cd_Aliquota_E' => '227',
-            'Cd_Aliquota_R' => '227',
-            'Cd_CGConto' => '51050101001',
+            'Cd_Aliquota' => env('ALIQUOTA'),
+            'Cd_Aliquota_E' => env('ALIQUOTA'),
+            'Cd_Aliquota_R' => env('ALIQUOTA'),
+            'Cd_CGConto' => env('CONTO_SPEDIZIONE'),
             'Decimali' => 2,
             'Cambio' => 1,
             'ImportoV' => $shippingCost,

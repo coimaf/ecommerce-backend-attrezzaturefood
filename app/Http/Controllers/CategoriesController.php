@@ -12,13 +12,14 @@ use GuzzleHttp\Exception\GuzzleException;
 class CategoriesController extends Controller
 {
 
-    protected $guzzleService;
+    protected $logFile;
 
     public function __construct(GuzzleService $guzzleService)
     {
         $this->guzzleService = $guzzleService;
+        $this->logFile = $this->generateLogFileName(); // Genera il file di log giornaliero
     }
-
+    
     public function getPrestashopCategories()
     {
         $client = $this->guzzleService->getClient();
@@ -34,58 +35,56 @@ class CategoriesController extends Controller
             $body = $response->getBody();
             $data = json_decode($body, true); // Decodifica JSON in array PHP
 
+            $this->logMessage('Categorie recuperate da PrestaShop.', ['count' => count($data['categories'] ?? [])]);
+
             return $data['categories'] ?? [];
         } catch (GuzzleException $e) {
-            Log::error("Errore nel recupero delle categorie: " . $e->getMessage());
+            $this->logMessage('Errore nel recupero delle categorie.', ['error' => $e->getMessage()]);
             return [];
         }
     }
 
     public function getCategories()
     {
-        $rootId = '8'; //! ID di Bricocanali - Da cambiare per altri ecommerce
-
-        // Recupero Bricocanali e tutte le sottocategorie dirette
-        $mainCategories = DB::connection('arca')
-            ->table('ARCategoria')
-            ->select('Id_ARCategoria', 'Id_ARCategoria_P', 'Descrizione')
-            ->where('Id_ARCategoria_P', $rootId)
-            ->get();
-
-        // Colleziona tutti gli ID delle sottocategorie di primo livello
-        $subcategoryIds = $mainCategories->pluck('Id_ARCategoria')->toArray();
+        $rootId = env('ROOT_ID'); //! ID BRICOCANALI
         
-        // Recupera sottocategorie di secondo livello
-        $subSubCategories = DB::connection('arca')
-            ->table('ARCategoria')
-            ->select('Id_ARCategoria', 'Id_ARCategoria_P', 'Descrizione')
-            ->whereIn('Id_ARCategoria_P', $subcategoryIds)
-            ->get();
-        
-        // Colleziona tutti gli ID delle sottocategorie di secondo livello
-        $subSubCategoryIds = $subSubCategories->pluck('Id_ARCategoria')->toArray();
-
-        // Recupera sottocategorie di terzo livello
-        $thirdLevelCategories = DB::connection('arca')
-            ->table('ARCategoria')
-            ->select('Id_ARCategoria', 'Id_ARCategoria_P', 'Descrizione')
-            ->whereIn('Id_ARCategoria_P', $subSubCategoryIds)
-            ->get();
-
-        // Unisci tutte le categorie: principali, di primo e secondo livello, e di terzo livello
-        $allCategories = $mainCategories
-                        ->merge($subSubCategories)
-                        ->merge($thirdLevelCategories);
-        
+        // Funzione ricorsiva per recuperare tutte le categorie figlie
+        $fetchCategories = function ($parentIds, &$allCategories) use (&$fetchCategories) {
+            if (empty($parentIds)) {
+                return; // Termina la ricorsione se non ci sono più ID genitori
+            }
+    
+            // Recupera le sottocategorie per gli ID forniti
+            $subCategories = DB::connection('arca')
+                ->table('ARCategoria')
+                ->select('Id_ARCategoria', 'Id_ARCategoria_P', 'Descrizione')
+                ->whereIn('Id_ARCategoria_P', $parentIds)
+                ->get();
+    
+            // Aggiungi le sottocategorie alla collezione generale
+            $allCategories = $allCategories->merge($subCategories);
+    
+            // Colleziona i prossimi ID per la ricorsione
+            $nextParentIds = $subCategories->pluck('Id_ARCategoria')->toArray();
+    
+            // Chiamata ricorsiva per continuare con i figli
+            $fetchCategories($nextParentIds, $allCategories);
+        };
+    
+        // Inizializza la collezione di tutte le categorie e avvia la ricorsione
+        $allCategories = collect();
+        $fetchCategories([$rootId], $allCategories);
+    
+        $this->logMessage('Categorie recuperate da Arca.', [
+            'total_categories' => $allCategories->count()
+        ]);
+    
         return [
-            'quantity' => count($allCategories),
-            'mainCategories' => $mainCategories,
-            'subCategories' => $subSubCategories,
-            'thirdLevelCategories' => $thirdLevelCategories,
+            'quantity' => $allCategories->count(),
             'allCategories' => $allCategories
         ];
     }
-
+    
     public function uploadCategoriesToPrestaShop()
     {
         $categories = $this->getCategories()['allCategories'];
@@ -102,9 +101,11 @@ class CategoriesController extends Controller
             if (!in_array($existingCategory['name'], $arcaCategoryNames) && !in_array($existingCategory['id'], ['1', '2'])) {
                 try {
                     $client->request('DELETE', "categories/{$existingCategory['id']}");
-                    Log::info("Categoria rimossa da PrestaShop: {$existingCategory['name']}, ID: {$existingCategory['id']}");
+                    $this->logMessage("Categoria rimossa da PrestaShop.", ['name' => $existingCategory['name'], 'id' => $existingCategory['id']]);
                 } catch (\GuzzleHttp\Exception\GuzzleException $e) {
-                    Log::error("Errore nella rimozione della categoria: {$existingCategory['name']}, ID: {$existingCategory['id']}", [
+                    $this->logMessage('Errore nella rimozione della categoria.', [
+                        'name' => $existingCategory['name'],
+                        'id' => $existingCategory['id'],
                         'error' => $e->getMessage()
                     ]);
                 }
@@ -122,6 +123,7 @@ class CategoriesController extends Controller
                     $categoryId = $existingCategories[$categoryExists]['id'];
                     $xmlCategory = $this->generateCategoryXML($category, $parentId, $categoryId);
                     $response = $client->request('PUT', "categories/$categoryId", ['body' => $xmlCategory]);
+                    $this->logMessage('Categoria aggiornata su PrestaShop.', ['name' => $category->Descrizione, 'arca_id' => $category->Id_ARCategoria, 'prestashop_id' => $categoryId]);
                 } else {
                     // Nuova categoria, crea una nuova
                     $xmlCategory = $this->generateCategoryXML($category, $parentId);
@@ -131,11 +133,12 @@ class CategoriesController extends Controller
                 $responseXML = new \SimpleXMLElement($response->getBody());
                 $newCategoryId = (string)$responseXML->category->id;
                 $categoryMap[$category->Id_ARCategoria] = $newCategoryId;
-                Log::info("Categoria processata: {$category->Descrizione}, ID Arca: {$category->Id_ARCategoria}, ID PrestaShop: $newCategoryId");
+                $this->logMessage('Nuova categoria creata su PrestaShop.', ['name' => $category->Descrizione, 'arca_id' => $category->Id_ARCategoria, 'prestashop_id' => $newCategoryId]);
             } catch (\GuzzleHttp\Exception\GuzzleException $e) {
-                Log::error("Errore nel processamento della categoria: {$category->Descrizione}", [
-                    'error' => $e->getMessage(),
-                    'response_body' => $e->getResponse() ? $e->getResponse()->getBody()->getContents() : 'No response body'
+                $this->logMessage('Errore nel processamento della categoria.', [
+                    'name' => $category->Descrizione,
+                    'arca_id' => $category->Id_ARCategoria,
+                    'error' => $e->getMessage()
                 ]);
             }
         }
@@ -182,6 +185,33 @@ class CategoriesController extends Controller
         }
         
         return $xml->asXML();
+    }
+
+    private function generateLogFileName()
+    {
+        $basePath = storage_path('logs');
+        $date = now()->format('Y-m-d');
+        $fileBaseName = "$basePath/prestashop_categories_job_log_$date";
+
+        $filePath = "$fileBaseName.txt";
+        $counter = 1;
+
+        while (file_exists($filePath)) {
+            $filePath = "$fileBaseName($counter).txt";
+            $counter++;
+        }
+
+        return $filePath;
+    }
+
+    private function logMessage($message, $data = null)
+    {
+        $timestamp = now()->format('Y-m-d H:i:s');
+        $logEntry = "[$timestamp] $message";
+        if ($data) {
+            $logEntry .= " | " . json_encode($data);
+        }
+        file_put_contents($this->logFile, $logEntry . PHP_EOL, FILE_APPEND);
     }
 
 }
