@@ -40,13 +40,13 @@ Route::get('/logs', function () {
 
     // Filtra i file che contengono il prefisso per prodotti o brand
     $filteredLogs = collect($logFiles)->filter(function ($file) {
-        return str_contains($file->getFilename(), 'prestashop_products_job_log_') || 
-               str_contains($file->getFilename(), 'prestashop_details_job_log_') || 
-               str_contains($file->getFilename(), 'prestashop_brand_job_log_') ||
-               str_contains($file->getFilename(), 'prestashop_stock_job_log_') ||
-               str_contains($file->getFilename(), 'prestashop_images_job_log_') ||
-               str_contains($file->getFilename(), 'prestashop_customers_job_log_') ||
-               str_contains($file->getFilename(), 'prestashop_categories_job_log_');
+        return str_contains($file->getFilename(), 'attrezzaturefood_products_job_log_') || 
+               str_contains($file->getFilename(), 'attrezzaturefood_details_job_log_') || 
+               str_contains($file->getFilename(), 'attrezzaturefood_brand_job_log_') ||
+               str_contains($file->getFilename(), 'attrezzaturefood_stock_job_log_') ||
+               str_contains($file->getFilename(), 'attrezzaturefood_images_job_log_') ||
+               str_contains($file->getFilename(), 'attrezzaturefood_customers_job_log_') ||
+               str_contains($file->getFilename(), 'attrezzaturefood_categories_job_log_');
     })->map(function ($file) {
         return [
             'name' => $file->getFilename(),
