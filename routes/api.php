@@ -1,8 +1,10 @@
 <?php
 
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\LogController;
 use App\Http\Controllers\TestController;
+use Illuminate\Support\Facades\Response;
 use App\Http\Controllers\BrandsController;
 use App\Http\Controllers\OrdersController;
 use App\Http\Controllers\ProductsController;
