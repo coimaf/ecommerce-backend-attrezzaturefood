@@ -27,7 +27,7 @@ class UploadProductsStocksToPrestaShop implements ShouldQueue
         $this->data = $data;
         $this->guzzleService = $guzzleService;
         $this->logFile = $this->generateLogFileName(); // Genera file log giornaliero
-        $this->errorLogFile = storage_path('logs/prestashop_stocks_errors.txt'); // Log errori separato
+        $this->errorLogFile = storage_path('logs/attrezzaturefood_stocks_errors.txt'); // Log errori separato
     }
 
     public function handle()
@@ -134,7 +134,7 @@ class UploadProductsStocksToPrestaShop implements ShouldQueue
     {
         $basePath = storage_path('logs');
         $date = now()->format('Y-m-d');
-        $fileBaseName = "$basePath/prestashop_stock_job_log_$date";
+        $fileBaseName = "$basePath/attrezzaturefood_stock_job_log_$date";
 
         $filePath = "$fileBaseName.txt";
         $counter = 1;

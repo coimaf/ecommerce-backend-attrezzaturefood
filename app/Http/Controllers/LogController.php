@@ -9,7 +9,7 @@ class LogController extends Controller
 {
     public function getErrorLog()
     {
-        $filePath = storage_path('logs/prestashop_stocks_errors.txt');
+        $filePath = storage_path('logs/attrezzaturefood_stocks_errors.txt');
 
         // Controlla se il file esiste
         if (!File::exists($filePath)) {

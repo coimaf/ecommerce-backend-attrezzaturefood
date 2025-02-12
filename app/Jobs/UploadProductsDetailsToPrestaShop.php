@@ -97,7 +97,7 @@ class UploadProductsDetailsToPrestaShop implements ShouldQueue
     {
         $basePath = storage_path('logs');
         $date = now()->format('Y-m-d');
-        $fileBaseName = "$basePath/prestashop_details_job_log_$date";
+        $fileBaseName = "$basePath/attrezzaturefood_details_job_log_$date";
     
         $filePath = "$fileBaseName.txt";
         $counter = 1;

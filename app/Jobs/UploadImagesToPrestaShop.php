@@ -26,7 +26,7 @@ class UploadImagesToPrestaShop implements ShouldQueue
         $this->data = $data;
         $this->guzzleService = $guzzleService;
         $this->logFile = $this->generateLogFileName(); // File giornaliero per i log
-        $this->errorLogFile = storage_path('logs/prestashop_errors.txt'); // File per gli errori
+        $this->errorLogFile = storage_path('logs/attrezzaturefood_errors.txt'); // File per gli errori
     }
     
     public function handle()
@@ -140,7 +140,7 @@ class UploadImagesToPrestaShop implements ShouldQueue
     {
         $basePath = storage_path('logs');
         $date = now()->format('Y-m-d');
-        $fileBaseName = "$basePath/prestashop_images_job_log_$date";
+        $fileBaseName = "$basePath/attrezzaturefood_images_job_log_$date";
 
         $filePath = "$fileBaseName.txt";
         $counter = 1;
