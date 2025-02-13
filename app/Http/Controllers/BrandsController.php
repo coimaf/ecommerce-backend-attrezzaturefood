@@ -44,7 +44,7 @@ class BrandsController extends Controller
 
         UploadBrandsToPrestaShop::dispatch([
             'brands' => $brands,
-        ])->onQueue('attrezzaturefood');
+        ]);
     
         return response()->json([
             'quantity' => count($brands),

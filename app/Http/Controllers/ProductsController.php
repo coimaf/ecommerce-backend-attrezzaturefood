@@ -294,7 +294,7 @@ class ProductsController extends Controller
         UploadProductsToPrestaShop::dispatch([
             'products' => $products,
             'images' => $allImageUrls
-        ], $this->guzzleService)->onQueue('attrezzaturefood');
+        ], $this->guzzleService);
     
         return response()->json([
             "message" => "Prodotti inviati per il caricamento a PrestaShop.",
@@ -327,7 +327,7 @@ class ProductsController extends Controller
         // Dispatch del job per il caricamento su PrestaShop
         UploadProductsDetailsToPrestaShop::dispatch([
             'products' => $products,
-        ], $this->guzzleService)->onQueue('attrezzaturefood');
+        ], $this->guzzleService);
     
         return response()->json([
             "message" => "Prodotti inviati per il caricamento a PrestaShop.",
@@ -381,7 +381,7 @@ class ProductsController extends Controller
             UploadImagesToPrestaShop::dispatch([
                 'products' => $this->fetchProducts(),
                 'images' => $allImageUrls
-            ], $this->guzzleService)->onQueue('attrezzaturefood');
+            ], $this->guzzleService);
     
             return response()->json([
                 "message" => "Immagini inviate per il caricamento a PrestaShop.",
@@ -416,7 +416,7 @@ class ProductsController extends Controller
         // Dispatch del job per il caricamento su PrestaShop
         UploadProductsStocksToPrestaShop::dispatch([
             'products' => $products,
-        ], $this->guzzleService)->onQueue('attrezzaturefood');
+        ], $this->guzzleService);
 
         return response()->json([
             "message" => "Giacenze inviate per il caricamento a PrestaShop.",
