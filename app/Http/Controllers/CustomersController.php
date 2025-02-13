@@ -10,7 +10,7 @@ class CustomersController extends Controller
 {
     public function uploadArcaCustomers(GuzzleService $guzzleService)
     {
-        ImportCustomersToArca::dispatch($guzzleService)->onQueue('attrezzaturefood');
+        ImportCustomersToArca::dispatch($guzzleService);
         return response()->json([
             'message' => 'Job per importazione clienti inviato con successo!'
         ], 201);
