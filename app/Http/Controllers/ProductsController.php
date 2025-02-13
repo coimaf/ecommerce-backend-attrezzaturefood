@@ -293,8 +293,9 @@ class ProductsController extends Controller
         // Dispatch del job per il caricamento su PrestaShop
         UploadProductsToPrestaShop::dispatch([
             'products' => $products,
-            'images' => $allImageUrls
-        ], $this->guzzleService);
+            'images' => $allImageUrls,
+            'guzzleService' => $this->guzzleService, 
+        ])->onQueue('attrezzaturefood');
     
         return response()->json([
             "message" => "Prodotti inviati per il caricamento a PrestaShop.",
@@ -327,7 +328,8 @@ class ProductsController extends Controller
         // Dispatch del job per il caricamento su PrestaShop
         UploadProductsDetailsToPrestaShop::dispatch([
             'products' => $products,
-        ], $this->guzzleService);
+            'guzzleService' => $this->guzzleService, 
+        ])->onQueue('attrezzaturefood');
     
         return response()->json([
             "message" => "Prodotti inviati per il caricamento a PrestaShop.",
@@ -380,8 +382,9 @@ class ProductsController extends Controller
             // Dispatch del job per il caricamento su PrestaShop
             UploadImagesToPrestaShop::dispatch([
                 'products' => $this->fetchProducts(),
-                'images' => $allImageUrls
-            ], $this->guzzleService);
+                'images' => $allImageUrls,
+                'guzzleService' => $this->guzzleService, 
+            ])->onQueue('attrezzaturefood');
     
             return response()->json([
                 "message" => "Immagini inviate per il caricamento a PrestaShop.",
@@ -416,7 +419,8 @@ class ProductsController extends Controller
         // Dispatch del job per il caricamento su PrestaShop
         UploadProductsStocksToPrestaShop::dispatch([
             'products' => $products,
-        ], $this->guzzleService);
+            'guzzleService' => $this->guzzleService, 
+        ])->onQueue('attrezzaturefood');
 
         return response()->json([
             "message" => "Giacenze inviate per il caricamento a PrestaShop.",
